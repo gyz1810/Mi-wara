@@ -205,6 +205,27 @@ const fileToBase64 = (file) => new Promise((resolve, reject)=>{
   rd.readAsDataURL(file);
 });
 
+// Traduce el error crudo de /api/leer-cheque a algo accionable. Sin esto el usuario solo ve
+// "no pude leer la imagen" y no hay forma de saber si falta saldo, si la clave esta mal o si
+// la foto no se entiende.
+const mensajeDeErrorOCR = (err, fallback) => {
+  const detalle = (err && err.message) || "";
+  const d = detalle.toLowerCase();
+  if(d.includes("credit balance") || d.includes("billing") || d.includes("insufficient")){
+    return "La cuenta de Anthropic no tiene saldo. Cargá créditos en console.anthropic.com para poder leer fotos.";
+  }
+  if(d.includes("authentication") || d.includes("invalid x-api-key") || d.includes("unauthorized") || d.includes("401")){
+    return "La clave de la API no es válida o venció. Generá una nueva y actualizala en Vercel.";
+  }
+  if(d.includes("anthropic_api_key")){
+    return "Falta configurar la clave de la API en el servidor.";
+  }
+  if(d.includes("rate") && d.includes("limit")){
+    return "Demasiadas fotos seguidas. Esperá unos segundos y probá de nuevo.";
+  }
+  return detalle ? `${fallback}\n\nDetalle: ${detalle}` : fallback;
+};
+
 // Descarga un HTML imprimible en vez de abrir una ventana nueva (que puede quedar bloqueada
 // dentro del visor de artifacts). El usuario lo abre y usa "Imprimir > Guardar como PDF".
 const downloadPrintable = (filename, title, bodyHtml) => {
@@ -456,7 +477,7 @@ export default function LibroTela(){
       const parsed = json.result || {};
       setCheckForm(f=>({...f, banco: parsed.banco||f.banco, numero: parsed.numero||f.numero, monto: parsed.monto||f.monto, fechaCobro: parsed.fecha||f.fechaCobro, contraparte: parsed.contraparte||f.contraparte}));
     }catch(err){
-      alert("No pude leer la imagen automáticamente. Cargá los datos del cheque a mano.");
+      alert(mensajeDeErrorOCR(err, "No pude leer la imagen automáticamente. Cargá los datos del cheque a mano."));
     }
     setOcrBusy(false);
   };
@@ -490,7 +511,7 @@ export default function LibroTela(){
         banco: p.banco||"", numero: p.numero||"", monto: p.monto||"", fechaCobro: p.fecha||"", contraparte: p.contraparte||"",
       }))}));
     }catch(err){
-      alert("No pude leer las imágenes automáticamente. Probá de nuevo o cargalos a mano.");
+      alert(mensajeDeErrorOCR(err, "No pude leer las imágenes automáticamente. Probá de nuevo o cargalos a mano."));
     }
     setOcrBusy(false);
   };
@@ -1092,7 +1113,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
       });
       setBulkInvForm({items});
     }catch(err){
-      alert("No pude leer las facturas automáticamente. Probá de nuevo o cargalas a mano.");
+      alert(mensajeDeErrorOCR(err, "No pude leer las facturas automáticamente. Probá de nuevo o cargalas a mano."));
     }
     setInvOcrBusy(false);
   };
