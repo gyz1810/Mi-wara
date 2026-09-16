@@ -197,13 +197,54 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const sortAlpha = (arr) => [...arr].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
 
-// Lee un File del input de la camara y lo deja en base64 para mandarlo a /api/leer-cheque.
-const fileToBase64 = (file) => new Promise((resolve, reject)=>{
-  const rd = new FileReader();
-  rd.onload = () => resolve(rd.result.split(",")[1]);
-  rd.onerror = reject;
-  rd.readAsDataURL(file);
+// El iPhone entrega las fotos del carrete en HEIC y a resolucion completa. La API solo acepta
+// jpeg/png/gif/webp, y Vercel corta los pedidos de mas de 4,5 MB (una foto de iPhone en base64
+// se acerca sola a ese limite, y la carga masiva manda varias). Por eso toda foto pasa por un
+// canvas antes de subirse: sale siempre en JPEG y con el lado mayor acotado.
+const MAX_LADO_FOTO = 1600;
+const CALIDAD_JPEG = 0.85;
+
+const fileToImagenJPEG = (file) => new Promise((resolve, reject)=>{
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  const limpiar = () => URL.revokeObjectURL(url);
+  img.onload = () => {
+    try{
+      const escala = Math.min(1, MAX_LADO_FOTO / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * escala));
+      canvas.height = Math.max(1, Math.round(img.height * escala));
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", CALIDAD_JPEG);
+      limpiar();
+      const data = dataUrl.split(",")[1];
+      if(!data) throw new Error("La foto quedó vacía al convertirla.");
+      resolve({media_type:"image/jpeg", data});
+    }catch(err){
+      limpiar();
+      reject(err);
+    }
+  };
+  img.onerror = () => {
+    limpiar();
+    reject(new Error("FOTO_NO_ABRE"));
+  };
+  img.src = url;
 });
+
+// Lee la respuesta de /api/leer-cheque. Si el servidor contesta algo que no es JSON
+// (por ejemplo una pagina de error de Vercel), lo decimos en vez de romper con un error opaco.
+const leerRespuestaOCR = async (resp) => {
+  const texto = await resp.text();
+  let json;
+  try{
+    json = JSON.parse(texto);
+  }catch{
+    throw new Error(`El servidor respondió algo inesperado (código ${resp.status}). ${texto.slice(0,120)}`);
+  }
+  if(json.error) throw new Error(json.error);
+  return json.result;
+};
 
 // Traduce el error crudo de /api/leer-cheque a algo accionable. Sin esto el usuario solo ve
 // "no pude leer la imagen" y no hay forma de saber si falta saldo, si la clave esta mal o si
@@ -211,6 +252,9 @@ const fileToBase64 = (file) => new Promise((resolve, reject)=>{
 const mensajeDeErrorOCR = (err, fallback) => {
   const detalle = (err && err.message) || "";
   const d = detalle.toLowerCase();
+  if(detalle === "FOTO_NO_ABRE"){
+    return "No pude abrir esa foto. Si está guardada en iCloud, abrila primero en Fotos para que se descargue al teléfono, y probá de nuevo.";
+  }
   if(d.includes("credit balance") || d.includes("billing") || d.includes("insufficient")){
     return "La cuenta de Anthropic no tiene saldo. Cargá créditos en console.anthropic.com para poder leer fotos.";
   }
@@ -463,18 +507,16 @@ export default function LibroTela(){
     if(!file) return;
     setOcrBusy(true);
     try{
-      const base64 = await fileToBase64(file);
+      const imagen = await fileToImagenJPEG(file);
       const resp = await fetch("/api/leer-cheque", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          images: [{media_type: file.type||"image/jpeg", data: base64}],
+          images: [imagen],
           prompt: "Mirá esta foto de un cheque bancario argentino. Respondé SOLO con un objeto JSON (sin texto adicional, sin ```) con estas claves: banco, numero, monto (solo número entero, sin puntos ni signos), fecha (formato AAAA-MM-DD, fecha de pago/vencimiento del cheque), contraparte (nombre de quien lo libra o a la orden de quien está). Si algún dato no se ve, usá cadena vacía.",
         })
       });
-      const json = await resp.json();
-      if(json.error) throw new Error(json.error);
-      const parsed = json.result || {};
+      const parsed = (await leerRespuestaOCR(resp)) || {};
       setCheckForm(f=>({...f, banco: parsed.banco||f.banco, numero: parsed.numero||f.numero, monto: parsed.monto||f.monto, fechaCobro: parsed.fecha||f.fechaCobro, contraparte: parsed.contraparte||f.contraparte}));
     }catch(err){
       alert(mensajeDeErrorOCR(err, "No pude leer la imagen automáticamente. Cargá los datos del cheque a mano."));
@@ -487,10 +529,7 @@ export default function LibroTela(){
     if(files.length===0) return;
     setOcrBusy(true);
     try{
-      const images = await Promise.all(files.map(async file=>{
-        const base64 = await fileToBase64(file);
-        return {media_type: file.type||"image/jpeg", data: base64};
-      }));
+      const images = await Promise.all(files.map(fileToImagenJPEG));
       const resp = await fetch("/api/leer-cheque", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -499,9 +538,7 @@ export default function LibroTela(){
           prompt: "Estas imágenes pueden contener uno o varios cheques bancarios argentinos cada una (por ejemplo varios cheques fotografiados juntos, o una foto por cheque). Identificá y extraé TODOS los cheques que puedas ver en total, sin repetir ni inventar ninguno. Respondé SOLO con un array JSON (sin texto adicional, sin ```), donde cada elemento tenga las claves: banco, numero, monto (solo número entero, sin puntos ni signos), fecha (formato AAAA-MM-DD, fecha de pago/vencimiento del cheque), contraparte (nombre de quien lo libra o a la orden de quien está). Si algún dato de un cheque no se ve, usá cadena vacía en esa clave, pero igual incluí el cheque.",
         })
       });
-      const json = await resp.json();
-      if(json.error) throw new Error(json.error);
-      const parsed = json.result;
+      const parsed = await leerRespuestaOCR(resp);
       if(!Array.isArray(parsed) || parsed.length===0){
         alert("No pude detectar ningún cheque en la foto. Probá con otra imagen o cargalos a mano.");
         setOcrBusy(false);
@@ -1071,10 +1108,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     if(files.length===0) return;
     setInvOcrBusy(true);
     try{
-      const images = await Promise.all(files.map(async file=>({
-        media_type: file.type||"image/jpeg",
-        data: await fileToBase64(file),
-      })));
+      const images = await Promise.all(files.map(fileToImagenJPEG));
       const resp = await fetch("/api/leer-cheque", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -1083,9 +1117,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
           prompt: "Estas imágenes son fotos de facturas (una o varias facturas distintas, puede haber una por imagen). Por cada factura que identifiques, extraé: empresa (el nombre de la empresa que figura en la factura, la razón social principal), fecha (formato AAAA-MM-DD), neto (el importe neto o subtotal SIN IVA si figura explícitamente, si no dejalo vacío), total (el importe TOTAL final, con IVA incluido, si figura), numero (número de factura si se ve). Respondé SOLO un array JSON, un objeto por factura, sin texto adicional y sin ```. Si algún dato no se ve, usá cadena vacía en esa clave, pero igual incluí la factura.",
         })
       });
-      const json = await resp.json();
-      if(json.error) throw new Error(json.error);
-      const parsed = json.result;
+      const parsed = await leerRespuestaOCR(resp);
       if(!Array.isArray(parsed) || parsed.length===0){
         alert("No pude detectar ninguna factura en la foto. Probá con otra imagen o cargalas a mano.");
         setInvOcrBusy(false);
