@@ -197,6 +197,14 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const sortAlpha = (arr) => [...arr].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
 
+// Lee un File del input de la camara y lo deja en base64 para mandarlo a /api/leer-cheque.
+const fileToBase64 = (file) => new Promise((resolve, reject)=>{
+  const rd = new FileReader();
+  rd.onload = () => resolve(rd.result.split(",")[1]);
+  rd.onerror = reject;
+  rd.readAsDataURL(file);
+});
+
 // Descarga un HTML imprimible en vez de abrir una ventana nueva (que puede quedar bloqueada
 // dentro del visor de artifacts). El usuario lo abre y usa "Imprimir > Guardar como PDF".
 const downloadPrintable = (filename, title, bodyHtml) => {
@@ -219,11 +227,13 @@ const rowToMovement = (r) => ({
   id: r.id, mes: r.mes, fecha: r.fecha || "", proveedor: r.proveedor, contactoProv: r.contacto_prov || "",
   cliente: r.cliente, contactoCli: r.contacto_cli || "", neto: r.neto, costoPct: r.costo_pct, ventaPct: r.venta_pct,
   aPagar: r.a_pagar, perc: r.perc || 0, aCobrar: r.a_cobrar, bille: r.bille || 0, ganancia: r.ganancia,
+  circuito: r.circuito || "no", montoFinal: r.monto_final || 0,
 });
 const movementToRow = (m) => ({
   mes: m.mes, fecha: m.fecha || "", proveedor: m.proveedor, contacto_prov: m.contactoProv || "",
   cliente: m.cliente, contacto_cli: m.contactoCli || "", neto: r(m.neto), costo_pct: Number(m.costoPct)||0, venta_pct: Number(m.ventaPct)||0,
   a_pagar: r(m.aPagar), perc: Number(m.perc)||0, a_cobrar: r(m.aCobrar), bille: r(m.bille), ganancia: r(m.ganancia),
+  circuito: m.circuito === "si" ? "si" : "no", monto_final: r(m.montoFinal),
 });
 const rowToCheck = (r) => ({
   id: r.id, tipo: r.tipo, medioPago: r.medio_pago, fecha: r.fecha || "", fechaCobro: r.fecha_cobro || "",
@@ -427,13 +437,6 @@ export default function LibroTela(){
   const toggleColumn = (key) => setData(d=>({...d, columns:{...d.columns, [key]: !d.columns[key]}}));
 
   // ---------- OCR de cheque ----------
-  const fileToBase64 = (file) => new Promise((resolve, reject)=>{
-    const rd = new FileReader();
-    rd.onload = () => resolve(rd.result.split(",")[1]);
-    rd.onerror = reject;
-    rd.readAsDataURL(file);
-  });
-
   const handleChequeFoto = async (e) => {
     const file = e.target.files?.[0];
     if(!file) return;
@@ -881,6 +884,24 @@ export default function LibroTela(){
 }
 
 // ============ SUBCOMPONENTS ============
+function MoneyInput({value, onChange, placeholder}){
+  const display = (value===""||value===null||value===undefined) ? "" : fmt(r(value));
+  return (
+    <input
+      className="input"
+      type="text"
+      inputMode="numeric"
+      placeholder={placeholder}
+      value={display}
+      onChange={e=>{
+        const raw = e.target.value.replace(/[^0-9-]/g,"");
+        onChange(raw);
+      }}
+    />
+  );
+}
+
+
 
 function Combobox({value, onChange, options, placeholder}){
   const [open, setOpen] = useState(false);
@@ -936,6 +957,9 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
   const [editingKey, setEditingKey] = useState(null);
   const [anualFilter, setAnualFilter] = useState("TODOS");
   const [showExport, setShowExport] = useState(false);
+  const [bulkInvForm, setBulkInvForm] = useState(null); // {items:[...]}
+  const [invOcrBusy, setInvOcrBusy] = useState(false);
+  const invFileInputRef = useRef(null);
   const [expTipo, setExpTipo] = useState("cliente");
   const [expSel, setExpSel] = useState("");
   const [expMonth, setExpMonth] = useState(activeMonth==="ANUAL" ? "TODOS" : activeMonth);
@@ -951,8 +975,149 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
   const openForm = () => setForm({
     mes: activeMonth==="ANUAL" ? "ENE" : activeMonth, fecha:"", proveedor:"", contactoProv:"",
-    cliente:"", contactoCli:"", neto:"", costoPct:"", ventaPct:"", aPagar:"", perc:"", aCobrar:"", bille:"", ganancia:"",
+    cliente:"", contactoCli:"", circuito:"no", montoFinal:"", neto:"", costoPct:"", ventaPct:"", aPagar:"", perc:"", aCobrar:"", bille:"", ganancia:"",
   });
+
+  const IVA = 1.21;
+  const ddmmyyToISO = (s) => {
+    if(!s) return "";
+    const m = (s+"").match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if(!m) return "";
+    let [, d, mo, y] = m;
+    if(y.length===2) y = "20"+y;
+    return `${y}-${mo.padStart(2,"0")}-${d.padStart(2,"0")}`;
+  };
+  const isoToDDMMYY = (iso) => {
+    if(!iso) return "";
+    const [y,mo,d] = iso.split("-");
+    return `${d}/${mo}/${y.slice(2)}`;
+  };
+
+  // Recalcula A pagar / A cobrar / Ganancia a partir de Neto, Costo%, Venta%, Percepción% y Billete.
+  const calcDerived = (f) => {
+    const neto = r(f.neto);
+    const costoPct = parseFloat((f.costoPct+"").replace(",",".")) || 0;
+    const ventaPct = parseFloat((f.ventaPct+"").replace(",",".")) || 0;
+    const perc = parseFloat((f.perc+"").replace(",",".")) || 0;
+    const bille = r(f.bille);
+    const aPagar = Math.round(neto * (costoPct + perc) / 100);
+    const aCobrar = Math.round(neto * (ventaPct + perc) / 100);
+    const ganancia = aCobrar - aPagar + bille;
+    return {...f, aPagar, aCobrar, ganancia};
+  };
+
+  // Si ya cargaste este proveedor o cliente antes, autocompleta la empresa/facturación
+  // habitual de esa contraparte con el último movimiento que coincida.
+  const suggestFromHistory = (f, changedField, value) => {
+    if(!value) return f;
+    const match = [...allMovements].reverse().find(m => m[changedField] === value);
+    if(!match) return f;
+    const next = {...f};
+    if(changedField === "proveedor" && !next.contactoProv) next.contactoProv = match.contactoProv || "";
+    if(changedField === "cliente" && !next.contactoCli) next.contactoCli = match.contactoCli || "";
+    return next;
+  };
+
+  // Circuito (factura con IVA): si cargo el monto final, calculo el neto (sin IVA);
+  // si cargo el neto, calculo el monto final. Los % siempre se aplican sobre el neto.
+  const setNetoFromFinal = (f, montoFinalRaw) => {
+    const montoFinal = r(montoFinalRaw);
+    const neto = Math.round(montoFinal / IVA);
+    return calcDerived({...f, montoFinal: montoFinalRaw, neto});
+  };
+  const setFinalFromNeto = (f, netoRaw) => {
+    const neto = r(netoRaw);
+    const montoFinal = f.circuito==="si" ? Math.round(neto*IVA) : f.montoFinal;
+    return calcDerived({...f, neto: netoRaw, montoFinal});
+  };
+
+  // Busca si el nombre de empresa leído en una factura coincide con una "Empresa" (proveedor)
+  // o un "Facturado a" (cliente) ya usados antes, y trae los datos habituales de esa contraparte.
+  const matchEmpresa = (nameRaw) => {
+    if(!nameRaw) return null;
+    const norm = nameRaw.trim().toUpperCase();
+    if(!norm) return null;
+    const sameOrIncludes = (a) => { const A = (a||"").trim().toUpperCase(); return A && (A===norm || norm.includes(A) || A.includes(norm)); };
+    let m = [...allMovements].reverse().find(mv => sameOrIncludes(mv.contactoProv));
+    if(m) return {tipo:"proveedor", proveedor:m.proveedor, contactoProv:m.contactoProv, costoPct:m.costoPct, perc:m.perc};
+    m = [...allMovements].reverse().find(mv => sameOrIncludes(mv.contactoCli));
+    if(m) return {tipo:"cliente", cliente:m.cliente, contactoCli:m.contactoCli, ventaPct:m.ventaPct, perc:m.perc};
+    return null;
+  };
+
+  const handleBulkInvoiceFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if(files.length===0) return;
+    setInvOcrBusy(true);
+    try{
+      const images = await Promise.all(files.map(async file=>({
+        media_type: file.type||"image/jpeg",
+        data: await fileToBase64(file),
+      })));
+      const resp = await fetch("/api/leer-cheque", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          images,
+          prompt: "Estas imágenes son fotos de facturas (una o varias facturas distintas, puede haber una por imagen). Por cada factura que identifiques, extraé: empresa (el nombre de la empresa que figura en la factura, la razón social principal), fecha (formato AAAA-MM-DD), neto (el importe neto o subtotal SIN IVA si figura explícitamente, si no dejalo vacío), total (el importe TOTAL final, con IVA incluido, si figura), numero (número de factura si se ve). Respondé SOLO un array JSON, un objeto por factura, sin texto adicional y sin ```. Si algún dato no se ve, usá cadena vacía en esa clave, pero igual incluí la factura.",
+        })
+      });
+      const json = await resp.json();
+      if(json.error) throw new Error(json.error);
+      const parsed = json.result;
+      if(!Array.isArray(parsed) || parsed.length===0){
+        alert("No pude detectar ninguna factura en la foto. Probá con otra imagen o cargalas a mano.");
+        setInvOcrBusy(false);
+        return;
+      }
+      const items = parsed.map(p=>{
+        const match = matchEmpresa(p.empresa);
+        const total = p.total ? r(p.total) : "";
+        const neto = p.neto ? r(p.neto) : (total ? Math.round(total/IVA) : "");
+        return {
+          empresaDetectada: p.empresa || "",
+          numero: p.numero || "",
+          mes: activeMonth==="ANUAL" ? "ENE" : activeMonth,
+          fecha: p.fecha ? isoToDDMMYY(p.fecha) : "",
+          proveedor: match && match.tipo==="proveedor" ? match.proveedor : "",
+          contactoProv: match && match.tipo==="proveedor" ? match.contactoProv : (match ? "" : (p.empresa||"")),
+          cliente: match && match.tipo==="cliente" ? match.cliente : "",
+          contactoCli: match && match.tipo==="cliente" ? match.contactoCli : "",
+          neto, montoFinal: total,
+          costoPct: match && match.tipo==="proveedor" ? (match.costoPct||"") : "",
+          ventaPct: match && match.tipo==="cliente" ? (match.ventaPct||"") : "",
+          perc: match ? (match.perc||"") : "",
+          bille: "",
+        };
+      });
+      setBulkInvForm({items});
+    }catch(err){
+      alert("No pude leer las facturas automáticamente. Probá de nuevo o cargalas a mano.");
+    }
+    setInvOcrBusy(false);
+  };
+
+  const updateBulkInvItem = (idx, patch) => {
+    setBulkInvForm(f=>({...f, items: f.items.map((it,i)=> i===idx ? {...it, ...patch} : it)}));
+  };
+  const removeBulkInvItem = (idx) => {
+    setBulkInvForm(f=>({...f, items: f.items.filter((_,i)=>i!==idx)}));
+  };
+  const confirmBulkInvSave = () => {
+    const invalid = bulkInvForm.items.some(it=>!it.proveedor || !it.cliente);
+    if(invalid){ alert("Completá proveedor y cliente en todas las facturas antes de guardar."); return; }
+    bulkInvForm.items.forEach(it=>{
+      const neto = r(it.neto), costoPct = parseFloat((it.costoPct+"").replace(",","."))||0, ventaPct = parseFloat((it.ventaPct+"").replace(",","."))||0, perc = parseFloat((it.perc+"").replace(",","."))||0, bille = r(it.bille);
+      const aPagar = Math.round(neto*(costoPct+perc)/100);
+      const aCobrar = Math.round(neto*(ventaPct+perc)/100);
+      const ganancia = aCobrar - aPagar + bille;
+      addMovement({
+        mes: it.mes, fecha: it.fecha, proveedor: it.proveedor, contactoProv: it.contactoProv,
+        cliente: it.cliente, contactoCli: it.contactoCli, neto, costoPct, ventaPct, aPagar, perc, aCobrar, bille, ganancia,
+      });
+    });
+    setBulkInvForm(null);
+  };
 
   const columnList = [
     {key:"fecha", label:"Fecha", w:70},{key:"proveedor", label:"Proveedor", w:110},{key:"cliente", label:"Cliente", w:110},
@@ -1020,6 +1185,13 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
           )}
         </div>
 
+        <button className="exp-btn full" style={{marginBottom:8, background:INK, color:PAPER_CARD}} onClick={openForm}><Plus size={15}/> Nuevo movimiento</button>
+
+        <input ref={invFileInputRef} type="file" accept="image/*" multiple capture="environment" style={{display:"none"}} onChange={handleBulkInvoiceFiles}/>
+        <button className="exp-btn full" style={{marginBottom:12}} onClick={()=>invFileInputRef.current.click()} disabled={invOcrBusy}>
+          <Camera size={15}/> {invOcrBusy ? "Leyendo facturas…" : "Cargar varias facturas (foto)"}
+        </button>
+
         <div className="stats">
           <div className="stat debo"><div className="lbl">Debo</div><div className="val">{fmt(displayedStats.aPagar)}</div></div>
           <div className="stat cobrar"><div className="lbl">Me deben</div><div className="val">{fmt(displayedStats.aCobrar)}</div></div>
@@ -1081,8 +1253,6 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
             </table>
           </div>
         )}
-
-        <button className="addbtn" onClick={openForm}><Plus size={15}/> Nuevo movimiento</button>
       </div>
 
       {form && (
@@ -1092,6 +1262,16 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
               <div style={{fontFamily:"Fraunces, serif", fontWeight:700, fontSize:17}}>Nuevo movimiento</div>
               <X size={20} onClick={()=>setForm(null)}/>
             </div>
+            <form onSubmit={e=>{
+              e.preventDefault();
+              if(!form.proveedor || !form.cliente){ alert("Cargá al menos proveedor y cliente."); return; }
+              const clean = {...form};
+              MONEY_KEYS.concat(["montoFinal"]).forEach(k=>{ clean[k] = r(clean[k]); });
+              // los % se guardan con decimales (6,5 % no es lo mismo que 7 %)
+              PCT_KEYS.forEach(k=>{ clean[k] = parseFloat((clean[k]+"").replace(",",".")) || 0; });
+              addMovement(clean);
+              setForm(null);
+            }}>
             <div className="field-row">
               <div className="field"><label>Mes</label>
                 <select className="input" value={form.mes} onChange={e=>setForm(f=>({...f,mes:e.target.value}))}>
@@ -1099,46 +1279,127 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
                 </select>
               </div>
               <div className="field"><label>Fecha</label>
-                <input className="input" placeholder="dd/mm/aa" value={form.fecha} onChange={e=>setForm(f=>({...f,fecha:e.target.value}))}/>
+                <div style={{display:"flex", gap:6}}>
+                  <input className="input" type="date" value={ddmmyyToISO(form.fecha)} onChange={e=>setForm(f=>({...f,fecha:isoToDDMMYY(e.target.value)}))}/>
+                  <button type="button" className="pill" style={{whiteSpace:"nowrap"}} onClick={()=>setForm(f=>({...f,fecha:isoToDDMMYY(todayISO())}))}>Hoy</button>
+                </div>
               </div>
             </div>
             <div className="field-row">
               <div className="field"><label>Proveedor</label>
-                <Combobox value={form.proveedor} onChange={v=>setForm(f=>({...f,proveedor:v}))} options={entities.providers} placeholder="Empezá a tipear…"/>
+                <Combobox value={form.proveedor} onChange={v=>setForm(f=>suggestFromHistory({...f,proveedor:v}, "proveedor", v))} options={entities.providers} placeholder="Empezá a tipear…"/>
               </div>
-              <div className="field"><label>Contacto prov.</label>
+              <div className="field"><label>Empresa</label>
                 <Combobox value={form.contactoProv} onChange={v=>setForm(f=>({...f,contactoProv:v}))} options={entities.contactosProv||[]} placeholder="Empezá a tipear…"/>
               </div>
             </div>
             <div className="field-row">
               <div className="field"><label>Cliente</label>
-                <Combobox value={form.cliente} onChange={v=>setForm(f=>({...f,cliente:v}))} options={entities.clients} placeholder="Empezá a tipear…"/>
+                <Combobox value={form.cliente} onChange={v=>setForm(f=>suggestFromHistory({...f,cliente:v}, "cliente", v))} options={entities.clients} placeholder="Empezá a tipear…"/>
               </div>
-              <div className="field"><label>Contacto cliente</label>
+              <div className="field"><label>Facturado a</label>
                 <Combobox value={form.contactoCli} onChange={v=>setForm(f=>({...f,contactoCli:v}))} options={entities.contactosCli||[]} placeholder="Empezá a tipear…"/>
               </div>
             </div>
+
+            <div className="field" style={{marginBottom:8}}>
+              <label>Circuito (factura con IVA)</label>
+              <div className="col-chips">
+                <span className={"chip"+(form.circuito==="no"?" chip-on":"")} onClick={()=>setForm(f=>({...f,circuito:"no"}))}>No</span>
+                <span className={"chip"+(form.circuito==="si"?" chip-on":"")} onClick={()=>setForm(f=>({...f,circuito:"si", montoFinal: f.neto? Math.round(r(f.neto)*IVA) : f.montoFinal}))}>Sí</span>
+              </div>
+            </div>
+
+            {form.circuito==="si" && (
+              <div className="field-row">
+                <div className="field"><label>Monto final (con IVA)</label>
+                  <MoneyInput value={form.montoFinal} onChange={v=>setForm(f=>setNetoFromFinal(f, v))}/>
+                </div>
+                <div className="field"><label>Neto (sin IVA, calculado)</label>
+                  <MoneyInput value={form.neto} onChange={v=>setForm(f=>setFinalFromNeto(f, v))}/>
+                </div>
+              </div>
+            )}
+
             <div className="field-row">
-              <div className="field"><label>Neto</label><input className="input" type="number" value={form.neto} onChange={e=>setForm(f=>({...f,neto:e.target.value}))}/></div>
-              <div className="field"><label>Costo %</label><input className="input" type="number" value={form.costoPct} onChange={e=>setForm(f=>({...f,costoPct:e.target.value}))}/></div>
-              <div className="field"><label>Venta %</label><input className="input" type="number" value={form.ventaPct} onChange={e=>setForm(f=>({...f,ventaPct:e.target.value}))}/></div>
+              {form.circuito!=="si" && (
+                <div className="field"><label>Neto</label><MoneyInput value={form.neto} onChange={v=>setForm(f=>setFinalFromNeto(f, v))}/></div>
+              )}
+              <div className="field"><label>Costo %</label><input className="input" type="number" value={form.costoPct} onChange={e=>setForm(f=>calcDerived({...f,costoPct:e.target.value}))}/></div>
+              <div className="field"><label>Venta %</label><input className="input" type="number" value={form.ventaPct} onChange={e=>setForm(f=>calcDerived({...f,ventaPct:e.target.value}))}/></div>
             </div>
             <div className="field-row">
-              <div className="field"><label>A pagar</label><input className="input" type="number" value={form.aPagar} onChange={e=>setForm(f=>({...f,aPagar:e.target.value}))}/></div>
-              <div className="field"><label>% Percepción</label><input className="input" type="number" value={form.perc} onChange={e=>setForm(f=>({...f,perc:e.target.value}))}/></div>
-              <div className="field"><label>A cobrar</label><input className="input" type="number" value={form.aCobrar} onChange={e=>setForm(f=>({...f,aCobrar:e.target.value}))}/></div>
+              <div className="field"><label>A pagar (calculado)</label><MoneyInput value={form.aPagar} onChange={v=>setForm(f=>({...f,aPagar:v}))}/></div>
+              <div className="field"><label>% Percepción</label><input className="input" type="number" value={form.perc} onChange={e=>setForm(f=>calcDerived({...f,perc:e.target.value}))}/></div>
+              <div className="field"><label>A cobrar (calculado)</label><MoneyInput value={form.aCobrar} onChange={v=>setForm(f=>({...f,aCobrar:v}))}/></div>
             </div>
             <div className="field-row">
-              <div className="field"><label>Billete</label><input className="input" type="number" value={form.bille} onChange={e=>setForm(f=>({...f,bille:e.target.value}))}/></div>
-              <div className="field"><label>Ganancia</label><input className="input" type="number" value={form.ganancia} onChange={e=>setForm(f=>({...f,ganancia:e.target.value}))}/></div>
+              <div className="field"><label>Billete</label><MoneyInput value={form.bille} onChange={v=>setForm(f=>calcDerived({...f,bille:v}))}/></div>
+              <div className="field"><label>Ganancia (calculada)</label><MoneyInput value={form.ganancia} onChange={v=>setForm(f=>({...f,ganancia:v}))}/></div>
             </div>
-            <button className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}} onClick={()=>{
-              if(!form.proveedor || !form.cliente){ alert("Cargá al menos proveedor y cliente."); return; }
-              const clean = {...form};
-              ["neto","costoPct","ventaPct","aPagar","perc","aCobrar","bille","ganancia"].forEach(k=>{ clean[k] = r(clean[k]); });
-              addMovement(clean);
-              setForm(null);
-            }}>Guardar movimiento</button>
+            <button type="submit" className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}}>Guardar movimiento</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {bulkInvForm && (
+        <div className="overlay" onClick={()=>setBulkInvForm(null)}>
+          <div className="panel" onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+              <div style={{fontFamily:"Fraunces, serif", fontWeight:700, fontSize:17}}>Revisar facturas</div>
+              <X size={20} onClick={()=>setBulkInvForm(null)}/>
+            </div>
+            <div className="muted" style={{marginBottom:10}}>
+              Encontré {bulkInvForm.items.length} factura{bulkInvForm.items.length!==1?"s":""}. Completá o corregí proveedor, cliente y porcentajes antes de guardar.
+            </div>
+            {bulkInvForm.items.map((it, idx)=>(
+              <div key={idx} className="check-card">
+                <div style={{display:"flex", justifyContent:"space-between", marginBottom:6}}>
+                  <b style={{fontSize:12}}>Factura #{idx+1}{it.numero ? ` — Nº ${it.numero}` : ""}</b>
+                  <X size={15} style={{cursor:"pointer", color:RED}} onClick={()=>removeBulkInvItem(idx)}/>
+                </div>
+                {it.empresaDetectada && <div className="muted" style={{fontSize:10.5, marginBottom:6}}>Empresa detectada en la foto: <b>{it.empresaDetectada}</b></div>}
+                <div className="field-row">
+                  <div className="field"><label>Mes</label>
+                    <select className="input" value={it.mes} onChange={e=>updateBulkInvItem(idx,{mes:e.target.value})}>
+                      {MONTHS.map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div className="field"><label>Fecha</label>
+                    <input className="input" type="date" value={ddmmyyToISO(it.fecha)} onChange={e=>updateBulkInvItem(idx,{fecha:isoToDDMMYY(e.target.value)})}/>
+                  </div>
+                </div>
+                <div className="field-row">
+                  <div className="field"><label>Proveedor</label>
+                    <Combobox value={it.proveedor} onChange={v=>updateBulkInvItem(idx, suggestFromHistory({...it,proveedor:v}, "proveedor", v))} options={entities.providers} placeholder="Empezá a tipear…"/>
+                  </div>
+                  <div className="field"><label>Empresa</label>
+                    <Combobox value={it.contactoProv} onChange={v=>updateBulkInvItem(idx,{contactoProv:v})} options={entities.contactosProv||[]} placeholder="Empezá a tipear…"/>
+                  </div>
+                </div>
+                <div className="field-row">
+                  <div className="field"><label>Cliente</label>
+                    <Combobox value={it.cliente} onChange={v=>updateBulkInvItem(idx, suggestFromHistory({...it,cliente:v}, "cliente", v))} options={entities.clients} placeholder="Empezá a tipear…"/>
+                  </div>
+                  <div className="field"><label>Facturado a</label>
+                    <Combobox value={it.contactoCli} onChange={v=>updateBulkInvItem(idx,{contactoCli:v})} options={entities.contactosCli||[]} placeholder="Empezá a tipear…"/>
+                  </div>
+                </div>
+                <div className="field-row">
+                  <div className="field"><label>Neto</label><MoneyInput value={it.neto} onChange={v=>updateBulkInvItem(idx,{neto:v})}/></div>
+                  <div className="field"><label>Costo %</label><input className="input" type="number" value={it.costoPct} onChange={e=>updateBulkInvItem(idx,{costoPct:e.target.value})}/></div>
+                  <div className="field"><label>Venta %</label><input className="input" type="number" value={it.ventaPct} onChange={e=>updateBulkInvItem(idx,{ventaPct:e.target.value})}/></div>
+                </div>
+                <div className="field-row">
+                  <div className="field"><label>% Percepción</label><input className="input" type="number" value={it.perc} onChange={e=>updateBulkInvItem(idx,{perc:e.target.value})}/></div>
+                  <div className="field"><label>Billete</label><MoneyInput value={it.bille} onChange={v=>updateBulkInvItem(idx,{bille:v})}/></div>
+                </div>
+              </div>
+            ))}
+            <button className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}} onClick={confirmBulkInvSave} disabled={bulkInvForm.items.length===0}>
+              Guardar {bulkInvForm.items.length} movimiento{bulkInvForm.items.length!==1?"s":""}
+            </button>
           </div>
         </div>
       )}
@@ -1185,6 +1446,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     </div>
   );
 }
+
 
 function ChequesView({checks, movements, onNew, onBulkNew, onDelete, onApply, onUnapply, pendienteCobrar, pendientePagar}){
   const [filtro, setFiltro] = useState("todos");
