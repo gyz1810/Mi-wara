@@ -648,7 +648,7 @@ export default function LibroTela(){
   const entitySaldo = (tipo, name) => entityMovs(tipo,name).reduce((s,m)=> s + (tipo==="cliente" ? pendienteCobrar(m) : pendientePagar(m)), 0);
 
   return (
-    <div style={{background:PAPER, minHeight:"100vh", fontFamily:"Inter, sans-serif", color:INK, paddingBottom:70}}>
+    <div style={{background:PAPER, minHeight:"100vh", fontFamily:"Inter, sans-serif", color:INK, paddingBottom:"calc(88px + env(safe-area-inset-bottom, 0px))"}}>
       <GlobalStyle/>
 
       {/* HEADER */}
@@ -1905,8 +1905,8 @@ function GlobalStyle(){
       .empty { padding:26px 10px; text-align:center; color:${INK_SOFT}; font-size:12px; }
       .empty b { display:block; color:${INK}; font-family:'Fraunces',serif; font-size:15px; margin-bottom:4px; font-weight:600; }
       .addbtn { width:100%; margin-top:12px; border:1.5px dashed ${LINE}; background:transparent; border-radius:8px; padding:10px; font-size:12px; font-weight:600; color:${INK_SOFT}; display:flex; align-items:center; justify-content:center; gap:6px; }
-      .bottomnav { position:fixed; bottom:0; left:0; right:0; background:${PAPER_CARD}; border-top:1px solid ${LINE_SOFT}; display:flex; padding:6px 0; max-width:480px; margin:0 auto; }
-      .navbtn { flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:2px; color:${INK_SOFT}; padding:4px; }
+      .bottomnav { position:fixed; bottom:0; left:0; right:0; background:${PAPER_CARD}; border-top:1px solid ${LINE_SOFT}; display:flex; padding:8px 0 calc(10px + env(safe-area-inset-bottom, 0px)); max-width:480px; margin:0 auto; }
+      .navbtn { flex:1; min-height:44px; background:none; border:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; color:${INK_SOFT}; padding:6px 4px; }
       .navbtn-on { color:${INK}; font-weight:700; }
       .overlay { position:fixed; inset:0; background:rgba(31,59,44,0.45); display:flex; align-items:flex-end; z-index:50; }
       .panel { background:${PAPER_CARD}; width:100%; max-width:480px; margin:0 auto; border-radius:16px 16px 0 0; padding:18px 16px 26px; max-height:85vh; overflow-y:auto; }
