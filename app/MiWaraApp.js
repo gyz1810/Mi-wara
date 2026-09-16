@@ -197,6 +197,10 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const sortAlpha = (arr) => [...arr].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
 
+// Mes en curso segun el reloj del telefono, para abrir la app donde se esta trabajando
+// en vez de arrancar siempre en enero.
+const mesActual = () => MONTHS[new Date().getMonth()];
+
 // El iPhone entrega las fotos del carrete en HEIC y a resolucion completa. La API solo acepta
 // jpeg/png/gif/webp, y Vercel corta los pedidos de mas de 4,5 MB (una foto de iPhone en base64
 // se acerca sola a ese limite, y la carga masiva manda varias). Por eso toda foto pasa por un
@@ -359,7 +363,7 @@ function useAppData(){
 export default function LibroTela(){
   const [data, setData, loaded] = useAppData();
   const [view, setView] = useState("mov");
-  const [activeMonth, setActiveMonth] = useState("ENE");
+  const [activeMonth, setActiveMonth] = useState(mesActual);
   const [showTools, setShowTools] = useState(false);
   const [toolTab, setToolTab] = useState("export");
   const [searchQ, setSearchQ] = useState("");
@@ -1018,6 +1022,17 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
   const [bulkInvForm, setBulkInvForm] = useState(null); // {items:[...]}
   const [invOcrBusy, setInvOcrBusy] = useState(false);
   const invFileInputRef = useRef(null);
+  const tabsRef = useRef(null);
+
+  // Los 13 botones de mes no entran en el ancho de un telefono. Al abrir, centramos el mes
+  // activo en la fila para que no quede fuera de pantalla. Solo movemos el scroll horizontal
+  // de la fila, no el de la pagina.
+  useEffect(()=>{
+    const fila = tabsRef.current;
+    const activa = fila && fila.querySelector(".tab.active");
+    if(!fila || !activa) return;
+    fila.scrollLeft = activa.offsetLeft - (fila.clientWidth - activa.offsetWidth) / 2;
+  },[]);
   const [expTipo, setExpTipo] = useState("cliente");
   const [expSel, setExpSel] = useState("");
   const [expMonth, setExpMonth] = useState(activeMonth==="ANUAL" ? "TODOS" : activeMonth);
@@ -1032,7 +1047,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
   };
 
   const openForm = () => setForm({
-    mes: activeMonth==="ANUAL" ? "ENE" : activeMonth, fecha:"", proveedor:"", contactoProv:"",
+    mes: activeMonth==="ANUAL" ? mesActual() : activeMonth, fecha:"", proveedor:"", contactoProv:"",
     cliente:"", contactoCli:"", circuito:"no", montoFinal:"", neto:"", costoPct:"", ventaPct:"", aPagar:"", perc:"", aCobrar:"", bille:"", ganancia:"",
   });
 
@@ -1130,7 +1145,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
         return {
           empresaDetectada: p.empresa || "",
           numero: p.numero || "",
-          mes: activeMonth==="ANUAL" ? "ENE" : activeMonth,
+          mes: activeMonth==="ANUAL" ? mesActual() : activeMonth,
           fecha: p.fecha ? isoToDDMMYY(p.fecha) : "",
           proveedor: match && match.tipo==="proveedor" ? match.proveedor : "",
           contactoProv: match && match.tipo==="proveedor" ? match.contactoProv : (match ? "" : (p.empresa||"")),
@@ -1221,7 +1236,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
   return (
     <div>
-      <div className="tabs">
+      <div className="tabs" ref={tabsRef}>
         {[...MONTHS, "ANUAL"].map(m=>(
           <button key={m} className={"tab"+(m==="ANUAL"?" anual":"")+(activeMonth===m?" active":"")} onClick={()=>setActiveMonth(m)}>{m}</button>
         ))}
