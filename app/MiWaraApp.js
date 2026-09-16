@@ -755,7 +755,7 @@ export default function LibroTela(){
               <>
                 {checkForm.medioPago==="cheque" && (
                   <>
-                    <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleChequeFoto}/>
+                    <input ref={fileInputRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleChequeFoto}/>
                     <button className="exp-btn full" style={{marginBottom:12}} onClick={()=>fileInputRef.current.click()} disabled={ocrBusy}>
                       <Camera size={15}/> {ocrBusy ? "Leyendo cheque…" : "Sacar foto y leer datos"}
                     </button>
@@ -822,7 +822,7 @@ export default function LibroTela(){
                   <option value="salida">Yo se los di a un proveedor</option>
                 </select>
                 <div className="muted" style={{marginBottom:12}}>Sacá una foto con varios cheques juntos, o elegí varias fotos (una por cheque). Se leen y suman todos solos.</div>
-                <input ref={bulkFileInputRef} type="file" accept="image/*" multiple capture="environment" style={{display:"none"}} onChange={handleBulkFiles}/>
+                <input ref={bulkFileInputRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleBulkFiles}/>
                 <button className="exp-btn full" onClick={()=>bulkFileInputRef.current.click()} disabled={ocrBusy}>
                   <Camera size={15}/> {ocrBusy ? "Leyendo cheques…" : "Sacar o elegir fotos"}
                 </button>
@@ -1187,7 +1187,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
         <button className="exp-btn full" style={{marginBottom:8, background:INK, color:PAPER_CARD}} onClick={openForm}><Plus size={15}/> Nuevo movimiento</button>
 
-        <input ref={invFileInputRef} type="file" accept="image/*" multiple capture="environment" style={{display:"none"}} onChange={handleBulkInvoiceFiles}/>
+        <input ref={invFileInputRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleBulkInvoiceFiles}/>
         <button className="exp-btn full" style={{marginBottom:12}} onClick={()=>invFileInputRef.current.click()} disabled={invOcrBusy}>
           <Camera size={15}/> {invOcrBusy ? "Leyendo facturas…" : "Cargar varias facturas (foto)"}
         </button>
