@@ -3,8 +3,9 @@
 //   POST /api/atajo?tipo=cheque[&flujo=entrada|salida]
 //   POST /api/atajo?tipo=factura
 //
-// Cuerpo: la foto cruda (Content-Type: image/jpeg o image/png), que es lo que manda
-// Atajos con "Cuerpo de la solicitud: Archivo". Tambien acepta JSON {image, media_type}.
+// Cuerpo: el archivo crudo, que es lo que manda Atajos con "Cuerpo de la solicitud:
+// Archivo". Acepta una foto (JPEG/PNG/GIF/WebP) o un PDF, que suele ser como llega
+// una factura. Tambien acepta JSON {image, media_type}.
 //
 // Requiere el token de ATAJO_TOKEN, en el encabezado x-atajo-token o en ?token=.
 // Sin eso el endpoint queda abierto a cualquiera que adivine la URL, y cada llamada
@@ -14,6 +15,7 @@ import { supabase } from "../../../lib/supabaseClient";
 import { leerImagenes, FORMATOS_ACEPTADOS, PROMPT_CHEQUE, PROMPT_FACTURA } from "../../../lib/ocr";
 
 const MESES = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"];
+const MAX_BYTES = 4 * 1024 * 1024;
 const IVA = 1.21;
 
 const entero = (n) => Math.round(Number(String(n ?? "").replace(/[^0-9.-]/g, "")) || 0);
@@ -74,13 +76,25 @@ async function leerFoto(req) {
 
   const buf = Buffer.from(await req.arrayBuffer());
   if (buf.length === 0) {
-    throw Object.assign(new Error("No llegó ninguna foto en el cuerpo del pedido."), { status: 400 });
+    throw Object.assign(new Error("No llegó ningún archivo en el cuerpo del pedido."), { status: 400 });
+  }
+  // Vercel corta los pedidos de mas de 4,5 MB; avisamos antes de que falle sin explicacion.
+  if (buf.length > MAX_BYTES) {
+    throw Object.assign(
+      new Error(
+        `El archivo pesa ${(buf.length / 1024 / 1024).toFixed(1)} MB y el máximo es 4 MB. ` +
+        `Si es una foto, bajale la calidad en "Convertir imagen"; si es un PDF de varias ` +
+        `páginas, mandá sólo la de la factura.`
+      ),
+      { status: 413 }
+    );
   }
   if (!FORMATOS_ACEPTADOS.includes(ct)) {
     throw Object.assign(
       new Error(
-        `Formato "${ct || "desconocido"}" no aceptado. El iPhone manda HEIC: agregá la acción ` +
-        `"Convertir imagen" a JPEG en el Atajo, antes de "Obtener contenido de la URL".`
+        `Formato "${ct || "desconocido"}" no aceptado. Se aceptan PDF y fotos JPEG o PNG. ` +
+        `El iPhone saca las fotos en HEIC: para esas agregá la acción "Convertir imagen" a ` +
+        `JPEG en el Atajo. Un PDF va tal cual, sin convertir.`
       ),
       { status: 415 }
     );
