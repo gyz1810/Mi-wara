@@ -1009,6 +1009,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
   const [editingKey, setEditingKey] = useState(null);
   const [anualFilter, setAnualFilter] = useState("TODOS");
   const [orden, setOrden] = useState({campo:"fecha", dir:"asc"});
+  const [circuitoFiltro, setCircuitoFiltro] = useState("TODOS"); // TODOS | SI | NO
   const [showExport, setShowExport] = useState(false);
   const [bulkInvForm, setBulkInvForm] = useState(null); // {items:[...]}
   const [invOcrBusy, setInvOcrBusy] = useState(false);
@@ -1242,12 +1243,24 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     });
   };
 
-  const filtrados = (activeMonth==="ANUAL" && anualFilter!=="TODOS") ? movs.filter(m=>m.mes===anualFilter) : movs;
+  // Los movimientos viejos no tienen el campo: cualquier cosa que no sea "si" es sin circuito.
+  const tieneCircuito = (m) => m.circuito === "si";
+  const filtroDeMes = activeMonth==="ANUAL" && anualFilter!=="TODOS";
+
+  const filtrados = movs
+    .filter(m => !filtroDeMes || m.mes===anualFilter)
+    .filter(m => circuitoFiltro==="TODOS" || (circuitoFiltro==="SI" ? tieneCircuito(m) : !tieneCircuito(m)));
+
   const displayedMovs = ordenarMovs(filtrados);
-  const displayedStats = (activeMonth==="ANUAL" && anualFilter!=="TODOS") ? {
-    ganancia: displayedMovs.reduce((s,m)=>s+r(m.ganancia),0),
-    aCobrar: displayedMovs.reduce((s,m)=>s+pendienteCobrar(m),0),
-    aPagar: displayedMovs.reduce((s,m)=>s+pendientePagar(m),0),
+
+  // Con cualquier filtro puesto, los totales de arriba tienen que ser los de lo que se ve:
+  // si no, Debo y Me deben hablarian de movimientos que la tabla no muestra. Sin filtro
+  // se usan los del mes, que ademas contemplan el historico de meses sin movimientos.
+  const hayFiltro = filtroDeMes || circuitoFiltro!=="TODOS";
+  const displayedStats = hayFiltro ? {
+    ganancia: filtrados.reduce((s,m)=>s+r(m.ganancia),0),
+    aCobrar: filtrados.reduce((s,m)=>s+pendienteCobrar(m),0),
+    aPagar: filtrados.reduce((s,m)=>s+pendientePagar(m),0),
   } : stats;
 
   const expNames = sortAlpha(expTipo==="cliente" ? entities.clients : entities.providers);
@@ -1300,6 +1313,12 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
           )}
         </div>
 
+        <div className="col-chips" style={{marginBottom:10}}>
+          {[["TODOS","Todos"],["SI","Circuito sí"],["NO","Circuito no"]].map(([v,l])=>(
+            <span key={v} className={"chip"+(circuitoFiltro===v?" chip-on":"")} onClick={()=>setCircuitoFiltro(v)}>{l}</span>
+          ))}
+        </div>
+
         <button className="exp-btn full" style={{marginBottom:8, background:INK, color:PAPER_CARD}} onClick={openForm}><Plus size={15}/> Nuevo movimiento</button>
 
         <input ref={invFileInputRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleBulkInvoiceFiles}/>
@@ -1316,7 +1335,11 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
         <button className="exp-btn full" style={{marginBottom:14}} onClick={()=>setShowExport(true)}><Download size={14}/> Exportar cliente/proveedor de {activeMonth==="ANUAL" ? "un período" : MONTH_NAMES[activeMonth]}</button>
 
         {displayedMovs.length===0 ? (
-          <div className="empty"><b>Sin movimientos cargados</b>Tocá “+ Nuevo movimiento” para cargar el primero.</div>
+          <div className="empty">
+            {circuitoFiltro!=="TODOS"
+              ? <><b>Ningún movimiento con circuito {circuitoFiltro==="SI"?"sí":"no"}</b>Probá con “Todos” para ver el resto.</>
+              : <><b>Sin movimientos cargados</b>Tocá “+ Nuevo movimiento” para cargar el primero.</>}
+          </div>
         ) : (
           <div style={{overflowX:"auto"}}>
             <table>
