@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Camera, Search, Download, Plus, Trash2, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { mensajeDeErrorOCR } from "../lib/mensajesOCR";
 
 const MONTHS = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"];
 const MONTH_NAMES = {ENE:"Enero",FEB:"Febrero",MAR:"Marzo",ABR:"Abril",MAY:"Mayo",JUN:"Junio",JUL:"Julio",AGO:"Agosto",SEP:"Septiembre",OCT:"Octubre",NOV:"Noviembre",DIC:"Diciembre"};
@@ -250,29 +251,6 @@ const leerRespuestaOCR = async (resp) => {
   return json.result;
 };
 
-// Traduce el error crudo de /api/leer-cheque a algo accionable. Sin esto el usuario solo ve
-// "no pude leer la imagen" y no hay forma de saber si falta saldo, si la clave esta mal o si
-// la foto no se entiende.
-const mensajeDeErrorOCR = (err, fallback) => {
-  const detalle = (err && err.message) || "";
-  const d = detalle.toLowerCase();
-  if(detalle === "FOTO_NO_ABRE"){
-    return "No pude abrir esa foto. Si está guardada en iCloud, abrila primero en Fotos para que se descargue al teléfono, y probá de nuevo.";
-  }
-  if(d.includes("credit balance") || d.includes("billing") || d.includes("insufficient")){
-    return "La cuenta de Anthropic no tiene saldo. Cargá créditos en console.anthropic.com para poder leer fotos.";
-  }
-  if(d.includes("authentication") || d.includes("invalid x-api-key") || d.includes("unauthorized") || d.includes("401")){
-    return "La clave de la API no es válida o venció. Generá una nueva y actualizala en Vercel.";
-  }
-  if(d.includes("anthropic_api_key")){
-    return "Falta configurar la clave de la API en el servidor.";
-  }
-  if(d.includes("rate") && d.includes("limit")){
-    return "Demasiadas fotos seguidas. Esperá unos segundos y probá de nuevo.";
-  }
-  return detalle ? `${fallback}\n\nDetalle: ${detalle}` : fallback;
-};
 
 // Descarga un HTML imprimible en vez de abrir una ventana nueva (que puede quedar bloqueada
 // dentro del visor de artifacts). El usuario lo abre y usa "Imprimir > Guardar como PDF".

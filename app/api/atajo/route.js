@@ -13,6 +13,7 @@
 
 import { supabase } from "../../../lib/supabaseClient";
 import { leerImagenes, FORMATOS_ACEPTADOS, PROMPT_CHEQUE, PROMPT_FACTURA } from "../../../lib/ocr";
+import { mensajeDeErrorOCR } from "../../../lib/mensajesOCR";
 
 const MESES = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"];
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -70,13 +71,13 @@ async function leerFoto(req) {
   if (ct === "application/json") {
     const body = await req.json();
     const media_type = (body.media_type || "image/jpeg").toLowerCase();
-    if (!body.image) throw Object.assign(new Error("El JSON no trae la clave \"image\"."), { status: 400 });
+    if (!body.image) throw Object.assign(new Error("El JSON no trae la clave \"image\"."), { status: 400, claro: true });
     return { media_type, data: body.image };
   }
 
   const buf = Buffer.from(await req.arrayBuffer());
   if (buf.length === 0) {
-    throw Object.assign(new Error("No llegó ningún archivo en el cuerpo del pedido."), { status: 400 });
+    throw Object.assign(new Error("No llegó ningún archivo en el cuerpo del pedido."), { status: 400, claro: true });
   }
   // Vercel corta los pedidos de mas de 4,5 MB; avisamos antes de que falle sin explicacion.
   if (buf.length > MAX_BYTES) {
@@ -86,7 +87,7 @@ async function leerFoto(req) {
         `Si es una foto, bajale la calidad en "Convertir imagen"; si es un PDF de varias ` +
         `páginas, mandá sólo la de la factura.`
       ),
-      { status: 413 }
+      { status: 413, claro: true }
     );
   }
   if (!FORMATOS_ACEPTADOS.includes(ct)) {
@@ -96,7 +97,7 @@ async function leerFoto(req) {
         `El iPhone saca las fotos en HEIC: para esas agregá la acción "Convertir imagen" a ` +
         `JPEG en el Atajo. Un PDF va tal cual, sin convertir.`
       ),
-      { status: 415 }
+      { status: 415, claro: true }
     );
   }
   return { media_type: ct, data: buf.toString("base64") };
@@ -215,6 +216,9 @@ export async function POST(req) {
     );
   } catch (e) {
     const status = e && e.status ? e.status : 500;
-    return texto(e && e.message ? e.message : String(e), status);
+    // La notificacion del Atajo es todo lo que ve el usuario: que diga que pasa,
+    // no el JSON crudo de la API. Los mensajes propios ya vienen escritos para leerse.
+    if (e && e.claro) return texto(e.message, status);
+    return texto(mensajeDeErrorOCR(e, "No pude leer el archivo."), status);
   }
 }
