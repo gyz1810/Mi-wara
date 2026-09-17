@@ -175,7 +175,7 @@ export async function POST(req) {
         `Cheque guardado — ${plata(monto)}` +
         `${d.banco ? ` · ${d.banco}` : ""}${d.numero ? ` · Nº ${d.numero}` : ""}` +
         `${d.contraparte ? ` · ${d.contraparte}` : ""}` +
-        (original ? `. Es el que te había dado ${original.contraparte || "sin contraparte"}.` : ""),
+        (original ? `. Es el que te dio ${original.contraparte || "sin contraparte"}.` : ""),
         200
       );
     }
