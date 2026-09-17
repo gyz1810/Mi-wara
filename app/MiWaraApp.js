@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Camera, Search, Download, Plus, Trash2, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
+import { Camera, Search, Download, Plus, Trash2, Pencil, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { mensajeDeErrorOCR } from "../lib/mensajesOCR";
 
@@ -436,12 +436,23 @@ export default function LibroTela(){
     }
   };
 
-  const MOV_COL_MAP = {mes:"mes",fecha:"fecha",proveedor:"proveedor",contactoProv:"contacto_prov",cliente:"cliente",contactoCli:"contacto_cli",neto:"neto",costoPct:"costo_pct",ventaPct:"venta_pct",aPagar:"a_pagar",perc:"perc",aCobrar:"a_cobrar",bille:"bille",ganancia:"ganancia"};
+  const MOV_COL_MAP = {mes:"mes",fecha:"fecha",proveedor:"proveedor",contactoProv:"contacto_prov",cliente:"cliente",contactoCli:"contacto_cli",neto:"neto",costoPct:"costo_pct",ventaPct:"venta_pct",aPagar:"a_pagar",perc:"perc",aCobrar:"a_cobrar",bille:"bille",ganancia:"ganancia",circuito:"circuito",montoFinal:"monto_final"};
 
   const updateMovement = (id, field, value) => {
     setData(d=>({...d, movements: d.movements.map(m=>m.id===id ? {...m, [field]: value} : m)}));
     const col = MOV_COL_MAP[field];
     if(col){ supabase.from("movements").update({[col]: value}).eq("id", id).then(({error})=>{ if(error) console.error(error); }); }
+  };
+
+  // Guarda varios campos de un movimiento en una sola operacion. updateMovement sirve para
+  // una celda suelta; al editar desde el formulario cambian muchos a la vez y mandarlos uno
+  // por uno serian catorce pedidos a la base.
+  const updateMovementFields = (id, campos) => {
+    setData(d=>({...d, movements: d.movements.map(m=>m.id===id ? {...m, ...campos} : m)}));
+    const fila = {};
+    Object.entries(campos).forEach(([k,v])=>{ if(MOV_COL_MAP[k]) fila[MOV_COL_MAP[k]] = v; });
+    if(Object.keys(fila).length===0) return;
+    supabase.from("movements").update(fila).eq("id", id).then(({error})=>{ if(error) console.error(error); });
   };
 
   const deleteMovement = (id) => {
@@ -656,7 +667,8 @@ export default function LibroTela(){
           activeMonth={activeMonth} setActiveMonth={setActiveMonth}
           movs={activeMovs} allMovements={data.movements} stats={statsFor(activeMonth)} columns={data.columns}
           entities={data.entities} pendienteCobrar={pendienteCobrar} pendientePagar={pendientePagar}
-          updateMovement={updateMovement} deleteMovement={deleteMovement} addMovement={addMovement}
+          updateMovement={updateMovement} updateMovementFields={updateMovementFields}
+          deleteMovement={deleteMovement} addMovement={addMovement}
         />
       )}
       {view==="cheques" && (
@@ -992,10 +1004,11 @@ function NavBtn({active, onClick, label, emoji}){
   );
 }
 
-function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats, columns, entities, pendienteCobrar, pendientePagar, updateMovement, deleteMovement, addMovement}){
+function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats, columns, entities, pendienteCobrar, pendientePagar, updateMovement, updateMovementFields, deleteMovement, addMovement}){
   const [form, setForm] = useState(null);
   const [editingKey, setEditingKey] = useState(null);
   const [anualFilter, setAnualFilter] = useState("TODOS");
+  const [orden, setOrden] = useState({campo:"fecha", dir:"asc"});
   const [showExport, setShowExport] = useState(false);
   const [bulkInvForm, setBulkInvForm] = useState(null); // {items:[...]}
   const [invOcrBusy, setInvOcrBusy] = useState(false);
@@ -1023,6 +1036,18 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     setExpTipo(t); setExpSel("");
     setExpCols(t==="cliente" ? CLIENT_DEFAULT_COLS : PROVIDER_DEFAULT_COLS);
   };
+
+  // Abre el mismo formulario del alta, pero cargado con el movimiento: en el telefono
+  // es mucho mas comodo que editar celda por celda en una tabla que se desplaza.
+  const abrirEdicion = (m) => setForm({
+    id: m.id, mes: m.mes, fecha: m.fecha || "",
+    proveedor: m.proveedor || "", contactoProv: m.contactoProv || "",
+    cliente: m.cliente || "", contactoCli: m.contactoCli || "",
+    circuito: m.circuito === "si" ? "si" : "no", montoFinal: m.montoFinal || "",
+    neto: m.neto ?? "", costoPct: m.costoPct ?? "", ventaPct: m.ventaPct ?? "",
+    aPagar: m.aPagar ?? "", perc: m.perc ?? "", aCobrar: m.aCobrar ?? "",
+    bille: m.bille ?? "", ganancia: m.ganancia ?? "",
+  });
 
   const openForm = () => setForm({
     mes: activeMonth==="ANUAL" ? mesActual() : activeMonth, fecha:"", proveedor:"", contactoProv:"",
@@ -1171,15 +1196,56 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     {key:"aPagar", label:"A pagar", w:95},{key:"perc", label:"Perc%", w:60},{key:"aCobrar", label:"A cobrar", w:95},{key:"bille", label:"Billete", w:85},{key:"ganancia", label:"Ganancia", w:95},
   ].filter(c=>columns[c.key]);
 
-  const displayedMovs = (activeMonth==="ANUAL" && anualFilter!=="TODOS") ? movs.filter(m=>m.mes===anualFilter) : movs;
+  const MONEY_KEYS = ["neto","aPagar","aCobrar","bille","ganancia"];
+  const PCT_KEYS = ["costoPct","ventaPct","perc"];
+  // Campos de los que dependen A pagar, A cobrar y Ganancia.
+  const ENTRADAS_CALCULO = ["neto","costoPct","ventaPct","perc","bille"];
+
+  // Misma cuenta que hace el formulario, para que editar en la tabla no deje numeros viejos.
+  const recalcular = (m) => {
+    const neto = r(m.neto), bille = r(m.bille);
+    const costoPct = Number(m.costoPct) || 0;
+    const ventaPct = Number(m.ventaPct) || 0;
+    const perc = Number(m.perc) || 0;
+    const aPagar = Math.round(neto * (costoPct + perc) / 100);
+    const aCobrar = Math.round(neto * (ventaPct + perc) / 100);
+    return {neto, costoPct, ventaPct, perc, bille, aPagar, aCobrar, ganancia: aCobrar - aPagar + bille};
+  };
+
+  // "08/01/26" -> "20260108", comparable como texto. Sin fecha legible devuelve null.
+  const fechaComparable = (f) => {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(f || "");
+    if(!m) return null;
+    const [, d, mo, y] = m;
+    return `${y.length === 2 ? "20" + y : y}${mo.padStart(2,"0")}${d.padStart(2,"0")}`;
+  };
+
+  const ordenarMovs = (lista) => {
+    const signo = orden.dir === "asc" ? 1 : -1;
+    return [...lista].sort((a,b)=>{
+      if(orden.campo === "fecha"){
+        const fa = fechaComparable(a.fecha), fb = fechaComparable(b.fecha);
+        // Los movimientos sin fecha van siempre al final, se ordene como se ordene:
+        // arriba taparian a los que si la tienen.
+        if(!fa && !fb) return 0;
+        if(!fa) return 1;
+        if(!fb) return -1;
+        return fa.localeCompare(fb) * signo;
+      }
+      if(MONEY_KEYS.includes(orden.campo) || PCT_KEYS.includes(orden.campo)){
+        return ((Number(a[orden.campo]) || 0) - (Number(b[orden.campo]) || 0)) * signo;
+      }
+      return String(a[orden.campo] || "").localeCompare(String(b[orden.campo] || ""), "es", {sensitivity:"base"}) * signo;
+    });
+  };
+
+  const filtrados = (activeMonth==="ANUAL" && anualFilter!=="TODOS") ? movs.filter(m=>m.mes===anualFilter) : movs;
+  const displayedMovs = ordenarMovs(filtrados);
   const displayedStats = (activeMonth==="ANUAL" && anualFilter!=="TODOS") ? {
     ganancia: displayedMovs.reduce((s,m)=>s+r(m.ganancia),0),
     aCobrar: displayedMovs.reduce((s,m)=>s+pendienteCobrar(m),0),
     aPagar: displayedMovs.reduce((s,m)=>s+pendientePagar(m),0),
   } : stats;
-
-  const MONEY_KEYS = ["neto","aPagar","aCobrar","bille","ganancia"];
-  const PCT_KEYS = ["costoPct","ventaPct","perc"];
 
   const expNames = sortAlpha(expTipo==="cliente" ? entities.clients : entities.providers);
 
@@ -1252,8 +1318,16 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
           <div style={{overflowX:"auto"}}>
             <table>
               <thead><tr>
-                {columnList.map(c=><th key={c.key} style={{minWidth:c.w}}>{c.label}</th>)}
-                <th style={{minWidth:30}}></th>
+                {columnList.map(c=>(
+                  <th
+                    key={c.key}
+                    style={{minWidth:c.w, cursor:"pointer", userSelect:"none"}}
+                    onClick={()=>setOrden(o=>({campo:c.key, dir: o.campo===c.key && o.dir==="asc" ? "desc" : "asc"}))}
+                  >
+                    {c.label}{orden.campo===c.key ? (orden.dir==="asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                ))}
+                <th style={{minWidth:54}}></th>
               </tr></thead>
               <tbody>
                 {displayedMovs.map(m=>{
@@ -1283,15 +1357,30 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
                               }}
                               onBlur={e=>{
                                 setEditingKey(null);
-                                if(isMoney) updateMovement(m.id, c.key, r(e.target.value));
-                                else if(isPct) updateMovement(m.id, c.key, parseFloat((e.target.value+"").replace(",", ".")) || 0);
+                                if(!isMoney && !isPct) return;
+                                const valor = isMoney
+                                  ? r(e.target.value)
+                                  : parseFloat((e.target.value+"").replace(",", ".")) || 0;
+                                // Neto, los % y el billete alimentan la cuenta: si cambian, A pagar,
+                                // A cobrar y Ganancia tienen que seguirlos. Antes quedaban con el
+                                // valor viejo y el movimiento mostraba numeros que no cerraban.
+                                if(ENTRADAS_CALCULO.includes(c.key)){
+                                  updateMovementFields(m.id, recalcular({...m, [c.key]: valor}));
+                                }else{
+                                  updateMovement(m.id, c.key, valor);
+                                }
                               }}
                             />
                             {c.key==="cliente" && debe && <span className="tag-debe">DEBE</span>}
                           </td>
                         );
                       })}
-                      <td><Trash2 size={14} style={{cursor:"pointer", color:RED}} onClick={()=>{ if(confirm("¿Eliminar este movimiento?")) deleteMovement(m.id); }}/></td>
+                      <td>
+                        <div style={{display:"flex", gap:10, alignItems:"center"}}>
+                          <Pencil size={14} style={{cursor:"pointer", color:INK_SOFT}} onClick={()=>abrirEdicion(m)}/>
+                          <Trash2 size={14} style={{cursor:"pointer", color:RED}} onClick={()=>{ if(confirm("¿Eliminar este movimiento?")) deleteMovement(m.id); }}/>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1305,7 +1394,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
         <div className="overlay" onClick={()=>setForm(null)}>
           <div className="panel" onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
-              <div style={{fontFamily:"Fraunces, serif", fontWeight:700, fontSize:17}}>Nuevo movimiento</div>
+              <div style={{fontFamily:"Fraunces, serif", fontWeight:700, fontSize:17}}>{form.id ? "Editar movimiento" : "Nuevo movimiento"}</div>
               <X size={20} onClick={()=>setForm(null)}/>
             </div>
             <form onSubmit={e=>{
@@ -1315,7 +1404,12 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
               MONEY_KEYS.concat(["montoFinal"]).forEach(k=>{ clean[k] = r(clean[k]); });
               // los % se guardan con decimales (6,5 % no es lo mismo que 7 %)
               PCT_KEYS.forEach(k=>{ clean[k] = parseFloat((clean[k]+"").replace(",",".")) || 0; });
-              addMovement(clean);
+              if(clean.id){
+                const {id, ...campos} = clean;
+                updateMovementFields(id, campos);
+              }else{
+                addMovement(clean);
+              }
               setForm(null);
             }}>
             <div className="field-row">
@@ -1383,7 +1477,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
               <div className="field"><label>Billete</label><MoneyInput value={form.bille} onChange={v=>setForm(f=>calcDerived({...f,bille:v}))}/></div>
               <div className="field"><label>Ganancia (calculada)</label><MoneyInput value={form.ganancia} onChange={v=>setForm(f=>({...f,ganancia:v}))}/></div>
             </div>
-            <button type="submit" className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}}>Guardar movimiento</button>
+            <button type="submit" className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}}>{form.id ? "Guardar cambios" : "Guardar movimiento"}</button>
             </form>
           </div>
         </div>
