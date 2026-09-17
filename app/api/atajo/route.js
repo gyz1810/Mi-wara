@@ -14,6 +14,7 @@
 import { supabase } from "../../../lib/supabaseClient";
 import { leerImagenes, FORMATOS_ACEPTADOS, PROMPT_CHEQUE, PROMPT_FACTURA } from "../../../lib/ocr";
 import { mensajeDeErrorOCR } from "../../../lib/mensajesOCR";
+import { buscarEntradaOriginal } from "../../../lib/cheques";
 
 const MESES = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"];
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -141,6 +142,19 @@ export async function POST(req) {
       if (monto <= 0) {
         return texto("Leí el cheque pero no pude sacar el monto. Cargalo a mano en la app.", 422);
       }
+      // Si es una salida, puede ser un cheque que ya habia entrado: lo buscamos por
+      // banco + numero para dejar registrada la trazabilidad del papel.
+      let original = null;
+      if (flujo === "salida") {
+        const { data: previos, error: errPrevios } = await supabase
+          .from("checks")
+          .select("id, tipo, banco, numero, contraparte, vinculado_a")
+          .order("created_at", { ascending: true })
+          .limit(2000);
+        if (errPrevios) return texto(`No pude revisar los cheques anteriores: ${errPrevios.message}`, 502);
+        original = buscarEntradaOriginal(previos || [], { banco: d.banco, numero: d.numero });
+      }
+
       const hoy = new Date().toISOString().slice(0, 10);
       const { error } = await supabase.from("checks").insert({
         tipo: flujo,
@@ -153,13 +167,15 @@ export async function POST(req) {
         contraparte: d.contraparte || "",
         estado: "pendiente",
         aplicado_a: null,
+        vinculado_a: original ? original.id : null,
       });
       if (error) return texto(`Lo leí pero no pude guardarlo: ${error.message}`, 502);
 
       return texto(
         `Cheque guardado — ${plata(monto)}` +
         `${d.banco ? ` · ${d.banco}` : ""}${d.numero ? ` · Nº ${d.numero}` : ""}` +
-        `${d.contraparte ? ` · ${d.contraparte}` : ""}`,
+        `${d.contraparte ? ` · ${d.contraparte}` : ""}` +
+        (original ? `. Es el que te había dado ${original.contraparte || "sin contraparte"}.` : ""),
         200
       );
     }

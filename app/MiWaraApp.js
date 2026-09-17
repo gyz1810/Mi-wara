@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Camera, Search, Download, Plus, Trash2, Pencil, SlidersHorizontal, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { mensajeDeErrorOCR } from "../lib/mensajesOCR";
+import { buscarEntradaOriginal, chequesPorVencer, diasParaVencer, vencimientoDe, sigueEnCartera, DIAS_VALIDEZ, DIAS_AVISO_VENCIMIENTO } from "../lib/cheques";
 
 const MONTHS = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"];
 const MONTH_NAMES = {ENE:"Enero",FEB:"Febrero",MAR:"Marzo",ABR:"Abril",MAY:"Mayo",JUN:"Junio",JUL:"Julio",AGO:"Agosto",SEP:"Septiembre",OCT:"Octubre",NOV:"Noviembre",DIC:"Diciembre"};
@@ -299,12 +300,12 @@ const movementToRow = (m) => ({
 const rowToCheck = (r) => ({
   id: r.id, tipo: r.tipo, medioPago: r.medio_pago, fecha: r.fecha || "", fechaCobro: r.fecha_cobro || "",
   banco: r.banco || "", numero: r.numero || "", monto: r.monto, contraparte: r.contraparte || "",
-  estado: r.estado, aplicadoA: r.aplicado_a,
+  estado: r.estado, aplicadoA: r.aplicado_a, vinculadoA: r.vinculado_a || null,
 });
 const checkToRow = (c) => ({
   tipo: c.tipo, medio_pago: c.medioPago || "cheque", fecha: c.fecha || null, fecha_cobro: c.fechaCobro || null,
   banco: c.banco || "", numero: c.numero || "", monto: r(c.monto), contraparte: c.contraparte || "",
-  estado: c.estado || "pendiente", aplicado_a: c.aplicadoA || null,
+  estado: c.estado || "pendiente", aplicado_a: c.aplicadoA || null, vinculado_a: c.vinculadoA || null,
 });
 const buildEntities = (movements) => ({
   providers: Array.from(new Set(movements.map(m=>m.proveedor).filter(Boolean))),
@@ -360,6 +361,7 @@ export default function LibroTela(){
   const [toolTab, setToolTab] = useState("export");
   const [searchQ, setSearchQ] = useState("");
   const [dismissedAlert, setDismissedAlert] = useState(false);
+  const [dismissedVencen, setDismissedVencen] = useState(false);
   const fileInputRef = useRef(null);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [checkForm, setCheckForm] = useState(null); // object when creating/editing a check
@@ -415,11 +417,16 @@ export default function LibroTela(){
     };
   };
 
+  // Dos avisos distintos: este es la fecha pactada de cobro, la que uno acordo.
   const upcomingChecks = data.checks.filter(c=>{
     if(c.estado!=="pendiente" || !c.fechaCobro) return false;
     const days = (new Date(c.fechaCobro) - new Date(todayISO())) / 86400000;
     return days <= 5;
   });
+
+  // Y este es la validez real del cheque: 30 dias desde la fecha que tiene escrita.
+  // Pasado eso el banco no lo paga, sin importar lo que se haya pactado.
+  const porVencer = chequesPorVencer(data.checks, todayISO());
 
   // ---------- mutations ----------
   const addEntity = (tipo, name) => {
@@ -478,12 +485,19 @@ export default function LibroTela(){
 
   const addCheck = async (chk) => {
     try{
-      const row = checkToRow({...chk, estado:"pendiente", aplicadoA:null});
+      // Una salida puede ser un cheque que entro antes: si aparece por banco + numero,
+      // queda vinculado y la entrada pasa a figurar como entregada.
+      const original = chk.tipo==="salida"
+        ? buscarEntradaOriginal(data.checks, {banco: chk.banco, numero: chk.numero})
+        : null;
+      const row = checkToRow({...chk, estado:"pendiente", aplicadoA:null, vinculadoA: original?.id || null});
       const { data: inserted, error } = await supabase.from("checks").insert(row).select().single();
       if(error) throw error;
       const newChk = rowToCheck(inserted);
       setData(d=>({...d, checks:[...d.checks, newChk]}));
-      log(`Cheque cargado: ${chk.tipo} $${r(chk.monto).toLocaleString("es-AR")} (${chk.banco||"s/banco"})`);
+      log(original
+        ? `Cheque entregado a ${chk.contraparte||"sin contraparte"}: ${chk.banco||"s/banco"} #${chk.numero||"—"}, que había entrado de ${original.contraparte||"sin contraparte"}.`
+        : `Cheque cargado: ${chk.tipo} $${r(chk.monto).toLocaleString("es-AR")} (${chk.banco||"s/banco"})`);
     }catch(e){
       console.error(e);
       alert("No se pudo guardar el pago. Revisá tu conexión.");
@@ -670,8 +684,20 @@ export default function LibroTela(){
       {upcomingChecks.length>0 && !dismissedAlert && (
         <div className="alert-banner" onClick={()=>setView("cheques")}>
           <AlertTriangle size={16}/>
-          <span>{upcomingChecks.length} cheque{upcomingChecks.length>1?"s":""} por vencer o vencido{upcomingChecks.length>1?"s":""} — {fmt(upcomingChecks.reduce((s,c)=>s+r(c.monto),0))}</span>
+          <span>{upcomingChecks.length} cheque{upcomingChecks.length>1?"s":""} llega{upcomingChecks.length>1?"n":""} a su fecha de cobro — {fmt(upcomingChecks.reduce((s,c)=>s+r(c.monto),0))}</span>
           <X size={15} onClick={(e)=>{e.stopPropagation(); setDismissedAlert(true);}}/>
+        </div>
+      )}
+
+      {porVencer.length>0 && !dismissedVencen && (
+        <div className="alert-banner vence" onClick={()=>setView("cheques")}>
+          <AlertTriangle size={16}/>
+          <span>
+            {porVencer.length} cheque{porVencer.length>1?"s":""} en cartera{" "}
+            {porVencer.some(c=>diasParaVencer(c.fechaCobro, todayISO())<0) ? "vencido o a punto de vencer" : "a punto de vencer"}
+            {" "}({DIAS_VALIDEZ} días) — {fmt(porVencer.reduce((s,c)=>s+r(c.monto),0))}
+          </span>
+          <X size={15} onClick={(e)=>{e.stopPropagation(); setDismissedVencen(true);}}/>
         </div>
       )}
 
@@ -1729,6 +1755,9 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
 
 function ChequesView({checks, movements, onNew, onBulkNew, onDelete, onApply, onUnapply, pendienteCobrar, pendientePagar}){
+  // Las dos puntas de un cheque fisico: de quien vino y a quien se fue.
+  const entradaDe = (c) => c.vinculadoA ? checks.find(x=>x.id===c.vinculadoA) : null;
+  const salidaDe = (c) => c.tipo==="entrada" ? checks.find(x=>x.vinculadoA===c.id) : null;
   const [filtro, setFiltro] = useState("todos");
   const [applyingId, setApplyingId] = useState(null);
 
@@ -1769,6 +1798,29 @@ function ChequesView({checks, movements, onNew, onBulkNew, onDelete, onApply, on
             <div>
               <div style={{fontWeight:700, fontSize:13}}>{c.tipo==="entrada"?"⬇️ Entrada":"⬆️ Salida"} · {medioIcon} {medioLabel}</div>
               <div className="muted" style={{fontSize:11}}>{c.contraparte || "sin contraparte"} · {c.fechaCobro || "—"}</div>
+              {(()=>{
+                const origen = entradaDe(c), destino = salidaDe(c);
+                const dias = c.medioPago==="cheque" ? diasParaVencer(c.fechaCobro, todayISO()) : null;
+                const enCartera = sigueEnCartera(c, checks);
+                return (
+                  <>
+                    {c.tipo==="entrada" && (
+                      destino
+                        ? <div className="traza">Entregado a <b>{destino.contraparte || "sin contraparte"}</b></div>
+                        : <div className="traza muted">En cartera</div>
+                    )}
+                    {c.tipo==="salida" && origen && (
+                      <div className="traza">Me lo había dado <b>{origen.contraparte || "sin contraparte"}</b></div>
+                    )}
+                    {dias!==null && enCartera && (
+                      <div className={"traza"+(dias<=DIAS_AVISO_VENCIMIENTO?" traza-vence":"")}>
+                        {dias<0 ? `Vencido hace ${-dias} día${-dias===1?"":"s"}` : dias===0 ? "Vence hoy" : `Vence en ${dias} día${dias===1?"":"s"}`}
+                        {" "}({vencimientoDe(c.fechaCobro)})
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             <div style={{textAlign:"right"}}>
               <div style={{fontFamily:"'IBM Plex Mono',monospace", fontWeight:600}}>{fmt(c.monto)}</div>
@@ -2088,6 +2140,9 @@ function GlobalStyle(){
       .iconbtn { border:1px solid ${LINE}; background:${PAPER_CARD}; border-radius:8px; width:36px; height:36px; display:flex; align-items:center; justify-content:center; color:${INK}; }
       .alert-banner { margin:0 12px 10px; background:${RED_BG}; color:${RED}; border:1px solid ${RED}; border-radius:8px; padding:9px 10px; font-size:12px; display:flex; align-items:center; gap:8px; cursor:pointer; }
       .alert-banner span { flex:1; }
+      .alert-banner.vence { background:#FFF4E0; color:#8A5A00; border-color:#E0A94A; }
+      .traza { font-size:10.5px; margin-top:2px; color:${INK_SOFT}; }
+      .traza-vence { color:${RED}; font-weight:700; }
       .tabs { display:flex; overflow-x:auto; gap:0; padding:6px 12px 0; scrollbar-width:none; }
       .tabs::-webkit-scrollbar { display:none; }
       .tab { flex-shrink:0; font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600; letter-spacing:0.03em; padding:8px 12px 6px; background:#CDEBD9; color:${INK_SOFT}; clip-path: polygon(8% 0, 92% 0, 100% 100%, 0% 100%); margin-right:-6px; cursor:pointer; border:none; }
