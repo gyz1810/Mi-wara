@@ -496,7 +496,7 @@ export default function LibroTela(){
       const newChk = rowToCheck(inserted);
       setData(d=>({...d, checks:[...d.checks, newChk]}));
       log(original
-        ? `Cheque entregado a ${chk.contraparte||"sin contraparte"}: ${chk.banco||"s/banco"} #${chk.numero||"—"}, que había entrado de ${original.contraparte||"sin contraparte"}.`
+        ? `Cheque entregado a ${chk.contraparte||"sin contraparte"}: ${chk.banco||"s/banco"} #${chk.numero||"—"}, que me dio ${original.contraparte||"sin contraparte"}.`
         : `Cheque cargado: ${chk.tipo} $${r(chk.monto).toLocaleString("es-AR")} (${chk.banco||"s/banco"})`);
     }catch(e){
       console.error(e);
@@ -1810,7 +1810,7 @@ function ChequesView({checks, movements, onNew, onBulkNew, onDelete, onApply, on
                         : <div className="traza muted">En cartera</div>
                     )}
                     {c.tipo==="salida" && origen && (
-                      <div className="traza">Me lo había dado <b>{origen.contraparte || "sin contraparte"}</b></div>
+                      <div className="traza">Me lo dio <b>{origen.contraparte || "sin contraparte"}</b></div>
                     )}
                     {dias!==null && enCartera && (
                       <div className={"traza"+(dias<=DIAS_AVISO_VENCIMIENTO?" traza-vence":"")}>
