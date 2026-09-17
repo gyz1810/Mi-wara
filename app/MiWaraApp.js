@@ -1063,7 +1063,10 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     id: m.id, mes: m.mes, fecha: m.fecha || "",
     proveedor: m.proveedor || "", contactoProv: m.contactoProv || "",
     cliente: m.cliente || "", contactoCli: m.contactoCli || "",
-    circuito: m.circuito === "si" ? "si" : "no", montoFinal: m.montoFinal || "",
+    circuito: m.circuito === "si" ? "si" : "no",
+    // Los movimientos sin circuito nunca guardaron el monto final: lo derivamos del neto
+    // para que el campo no muestre cero.
+    montoFinal: r(m.montoFinal) > 0 ? m.montoFinal : (r(m.neto) > 0 ? Math.round(r(m.neto) * IVA) : ""),
     neto: m.neto ?? "", costoPct: m.costoPct ?? "", ventaPct: m.ventaPct ?? "",
     aPagar: m.aPagar ?? "", perc: m.perc ?? "", aCobrar: m.aCobrar ?? "",
     bille: m.bille ?? "", ganancia: m.ganancia ?? "",
@@ -1121,10 +1124,12 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     const neto = Math.round(montoFinal / IVA);
     return calcDerived({...f, montoFinal: montoFinalRaw, neto});
   };
+  // El monto final y el neto se derivan uno del otro siempre, haya circuito o no: el IVA
+  // es el mismo y poder pasar de uno a otro sirve igual. El circuito queda solo como
+  // marca de que ademas hay factura.
   const setFinalFromNeto = (f, netoRaw) => {
     const neto = r(netoRaw);
-    const montoFinal = f.circuito==="si" ? Math.round(neto*IVA) : f.montoFinal;
-    return calcDerived({...f, neto: netoRaw, montoFinal});
+    return calcDerived({...f, neto: netoRaw, montoFinal: Math.round(neto*IVA)});
   };
 
   // Busca si el nombre de empresa leído en una factura coincide con una "Empresa" (proveedor)
@@ -1506,25 +1511,23 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
               <label>Circuito (factura con IVA)</label>
               <div className="col-chips">
                 <span className={"chip"+(form.circuito==="no"?" chip-on":"")} onClick={()=>setForm(f=>({...f,circuito:"no"}))}>No</span>
-                <span className={"chip"+(form.circuito==="si"?" chip-on":"")} onClick={()=>setForm(f=>({...f,circuito:"si", montoFinal: f.neto? Math.round(r(f.neto)*IVA) : f.montoFinal}))}>Sí</span>
+                <span className={"chip"+(form.circuito==="si"?" chip-on":"")} onClick={()=>setForm(f=>({...f,circuito:"si"}))}>Sí</span>
               </div>
             </div>
 
-            {form.circuito==="si" && (
-              <div className="field-row">
-                <div className="field"><label>Monto final (con IVA)</label>
-                  <MoneyInput value={form.montoFinal} onChange={v=>setForm(f=>setNetoFromFinal(f, v))}/>
-                </div>
-                <div className="field"><label>Neto (sin IVA, calculado)</label>
-                  <MoneyInput value={form.neto} onChange={v=>setForm(f=>setFinalFromNeto(f, v))}/>
-                </div>
+            <div className="field-row">
+              <div className="field"><label>Monto final (con IVA)</label>
+                <MoneyInput value={form.montoFinal} onChange={v=>setForm(f=>setNetoFromFinal(f, v))}/>
               </div>
-            )}
+              <div className="field"><label>Neto (sin IVA)</label>
+                <MoneyInput value={form.neto} onChange={v=>setForm(f=>setFinalFromNeto(f, v))}/>
+              </div>
+            </div>
+            <div className="muted" style={{margin:"-4px 0 8px", fontSize:10.5}}>
+              Cargá cualquiera de los dos y el otro se calcula solo. Los % van sobre el neto.
+            </div>
 
             <div className="field-row">
-              {form.circuito!=="si" && (
-                <div className="field"><label>Neto</label><MoneyInput value={form.neto} onChange={v=>setForm(f=>setFinalFromNeto(f, v))}/></div>
-              )}
               <div className="field"><label>Costo %</label><input className="input" type="number" value={form.costoPct} onChange={e=>setForm(f=>calcDerived({...f,costoPct:e.target.value}))}/></div>
               <div className="field"><label>Venta %</label><input className="input" type="number" value={form.ventaPct} onChange={e=>setForm(f=>calcDerived({...f,ventaPct:e.target.value}))}/></div>
             </div>
