@@ -1039,7 +1039,10 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
   // Abre el mismo formulario del alta, pero cargado con el movimiento: en el telefono
   // es mucho mas comodo que editar celda por celda en una tabla que se desplaza.
-  const abrirEdicion = (m) => setForm({
+  // calcDerived al abrir: los movimientos cargados antes de que la app calculara sola
+  // tienen A pagar, A cobrar y Ganancia en cero, y el formulario solo recalculaba al
+  // cambiar un campo — abrirlo y no tocar nada mostraba los ceros viejos.
+  const abrirEdicion = (m) => setForm(calcDerived({
     id: m.id, mes: m.mes, fecha: m.fecha || "",
     proveedor: m.proveedor || "", contactoProv: m.contactoProv || "",
     cliente: m.cliente || "", contactoCli: m.contactoCli || "",
@@ -1047,7 +1050,7 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     neto: m.neto ?? "", costoPct: m.costoPct ?? "", ventaPct: m.ventaPct ?? "",
     aPagar: m.aPagar ?? "", perc: m.perc ?? "", aCobrar: m.aCobrar ?? "",
     bille: m.bille ?? "", ganancia: m.ganancia ?? "",
-  });
+  }));
 
   const openForm = () => setForm({
     mes: activeMonth==="ANUAL" ? mesActual() : activeMonth, fecha:"", proveedor:"", contactoProv:"",
