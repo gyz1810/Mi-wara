@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Camera, Search, Download, Plus, Trash2, Pencil, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
+import { Camera, Search, Download, Plus, Trash2, Pencil, SlidersHorizontal, X, AlertTriangle, TrendingUp, Settings, MessageCircle, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { mensajeDeErrorOCR } from "../lib/mensajesOCR";
 
@@ -201,6 +201,20 @@ const sortAlpha = (arr) => [...arr].sort((a,b)=>a.localeCompare(b,"es",{sensitiv
 // Mes en curso segun el reloj del telefono, para abrir la app donde se esta trabajando
 // en vez de arrancar siempre en enero.
 const mesActual = () => MONTHS[new Date().getMonth()];
+
+// Filtros de la vista de Movimientos. Todos juntos en un solo objeto para poder
+// contarlos, limpiarlos y compararlos con el vacio de una.
+const SIN_FILTROS = {
+  circuito: "TODOS",   // TODOS | SI | NO
+  proveedor: "",
+  cliente: "",
+  estado: "TODOS",     // TODOS | PENDIENTES | COBRADOS
+  desde: "", hasta: "",
+  netoMin: "", netoMax: "",
+};
+
+const contarFiltros = (f) =>
+  Object.entries(f).filter(([k, v]) => v !== SIN_FILTROS[k]).length;
 
 // El iPhone entrega las fotos del carrete en HEIC y a resolucion completa. La API solo acepta
 // jpeg/png/gif/webp, y Vercel corta los pedidos de mas de 4,5 MB (una foto de iPhone en base64
@@ -1009,7 +1023,9 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
   const [editingKey, setEditingKey] = useState(null);
   const [anualFilter, setAnualFilter] = useState("TODOS");
   const [orden, setOrden] = useState({campo:"fecha", dir:"asc"});
-  const [circuitoFiltro, setCircuitoFiltro] = useState("TODOS"); // TODOS | SI | NO
+  const [showFiltros, setShowFiltros] = useState(false);
+  const [filtros, setFiltros] = useState(SIN_FILTROS);
+  const setFiltro = (k, v) => setFiltros(f=>({...f, [k]: v}));
   const [showExport, setShowExport] = useState(false);
   const [bulkInvForm, setBulkInvForm] = useState(null); // {items:[...]}
   const [invOcrBusy, setInvOcrBusy] = useState(false);
@@ -1243,20 +1259,36 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
     });
   };
 
-  // Los movimientos viejos no tienen el campo: cualquier cosa que no sea "si" es sin circuito.
-  const tieneCircuito = (m) => m.circuito === "si";
   const filtroDeMes = activeMonth==="ANUAL" && anualFilter!=="TODOS";
+  const cuantosFiltros = contarFiltros(filtros);
 
-  const filtrados = movs
-    .filter(m => !filtroDeMes || m.mes===anualFilter)
-    .filter(m => circuitoFiltro==="TODOS" || (circuitoFiltro==="SI" ? tieneCircuito(m) : !tieneCircuito(m)));
+  const pasaFiltros = (m) => {
+    const f = filtros;
+    // Los movimientos viejos no tienen el campo: cualquier cosa que no sea "si" es sin circuito.
+    if(f.circuito !== "TODOS" && (m.circuito === "si") !== (f.circuito === "SI")) return false;
+    if(f.proveedor && m.proveedor !== f.proveedor) return false;
+    if(f.cliente && m.cliente !== f.cliente) return false;
+    if(f.estado === "PENDIENTES" && pendienteCobrar(m) <= 0) return false;
+    if(f.estado === "COBRADOS" && pendienteCobrar(m) > 0) return false;
+    if(f.desde || f.hasta){
+      const fm = fechaComparable(m.fecha);
+      // Un movimiento sin fecha no puede cumplir un rango de fechas.
+      if(!fm) return false;
+      if(f.desde && fm < f.desde.replace(/-/g,"")) return false;
+      if(f.hasta && fm > f.hasta.replace(/-/g,"")) return false;
+    }
+    if(f.netoMin !== "" && r(m.neto) < r(f.netoMin)) return false;
+    if(f.netoMax !== "" && r(m.neto) > r(f.netoMax)) return false;
+    return true;
+  };
 
+  const filtrados = movs.filter(m => (!filtroDeMes || m.mes===anualFilter) && pasaFiltros(m));
   const displayedMovs = ordenarMovs(filtrados);
 
   // Con cualquier filtro puesto, los totales de arriba tienen que ser los de lo que se ve:
   // si no, Debo y Me deben hablarian de movimientos que la tabla no muestra. Sin filtro
   // se usan los del mes, que ademas contemplan el historico de meses sin movimientos.
-  const hayFiltro = filtroDeMes || circuitoFiltro!=="TODOS";
+  const hayFiltro = filtroDeMes || cuantosFiltros > 0;
   const displayedStats = hayFiltro ? {
     ganancia: filtrados.reduce((s,m)=>s+r(m.ganancia),0),
     aCobrar: filtrados.reduce((s,m)=>s+pendienteCobrar(m),0),
@@ -1313,11 +1345,13 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
           )}
         </div>
 
-        <div className="col-chips" style={{marginBottom:10}}>
-          {[["TODOS","Todos"],["SI","Circuito sí"],["NO","Circuito no"]].map(([v,l])=>(
-            <span key={v} className={"chip"+(circuitoFiltro===v?" chip-on":"")} onClick={()=>setCircuitoFiltro(v)}>{l}</span>
-          ))}
-        </div>
+        <button
+          className={"exp-btn full"+(cuantosFiltros>0?" filtros-on":"")}
+          style={{marginBottom:8}}
+          onClick={()=>setShowFiltros(true)}
+        >
+          <SlidersHorizontal size={14}/> Filtros{cuantosFiltros>0 ? ` (${cuantosFiltros})` : ""}
+        </button>
 
         <button className="exp-btn full" style={{marginBottom:8, background:INK, color:PAPER_CARD}} onClick={openForm}><Plus size={15}/> Nuevo movimiento</button>
 
@@ -1336,8 +1370,8 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
 
         {displayedMovs.length===0 ? (
           <div className="empty">
-            {circuitoFiltro!=="TODOS"
-              ? <><b>Ningún movimiento con circuito {circuitoFiltro==="SI"?"sí":"no"}</b>Probá con “Todos” para ver el resto.</>
+            {cuantosFiltros>0
+              ? <><b>Ningún movimiento coincide con los filtros</b>Tocá “Filtros” y limpiá alguno para ver el resto.</>
               : <><b>Sin movimientos cargados</b>Tocá “+ Nuevo movimiento” para cargar el primero.</>}
           </div>
         ) : (
@@ -1505,6 +1539,83 @@ function MovimientosView({activeMonth, setActiveMonth, movs, allMovements, stats
             </div>
             <button type="submit" className="exp-btn full" style={{marginTop:10, background:INK, color:PAPER_CARD}}>{form.id ? "Guardar cambios" : "Guardar movimiento"}</button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showFiltros && (
+        <div className="overlay" onClick={()=>setShowFiltros(false)}>
+          <div className="panel" onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+              <div style={{fontFamily:"Fraunces, serif", fontWeight:700, fontSize:17}}>Filtros</div>
+              <X size={20} onClick={()=>setShowFiltros(false)}/>
+            </div>
+
+            <div className="field" style={{marginBottom:10}}>
+              <label>Circuito (factura con IVA)</label>
+              <div className="col-chips">
+                {[["TODOS","Todos"],["SI","Sí"],["NO","No"]].map(([v,l])=>(
+                  <span key={v} className={"chip"+(filtros.circuito===v?" chip-on":"")} onClick={()=>setFiltro("circuito",v)}>{l}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="field" style={{marginBottom:10}}>
+              <label>Cobro</label>
+              <div className="col-chips">
+                {[["TODOS","Todos"],["PENDIENTES","Pendientes de cobro"],["COBRADOS","Ya cobrados"]].map(([v,l])=>(
+                  <span key={v} className={"chip"+(filtros.estado===v?" chip-on":"")} onClick={()=>setFiltro("estado",v)}>{l}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="field-row">
+              <div className="field"><label>Proveedor</label>
+                <select className="input" value={filtros.proveedor} onChange={e=>setFiltro("proveedor", e.target.value)}>
+                  <option value="">Todos</option>
+                  {sortAlpha(entities.providers).map(n=><option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <div className="field"><label>Cliente</label>
+                <select className="input" value={filtros.cliente} onChange={e=>setFiltro("cliente", e.target.value)}>
+                  <option value="">Todos</option>
+                  {sortAlpha(entities.clients).map(n=><option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="field-row">
+              <div className="field"><label>Fecha desde</label>
+                <input className="input" type="date" value={filtros.desde} onChange={e=>setFiltro("desde", e.target.value)}/>
+              </div>
+              <div className="field"><label>Fecha hasta</label>
+                <input className="input" type="date" value={filtros.hasta} onChange={e=>setFiltro("hasta", e.target.value)}/>
+              </div>
+            </div>
+
+            <div className="field-row">
+              <div className="field"><label>Neto desde</label>
+                <MoneyInput value={filtros.netoMin} onChange={v=>setFiltro("netoMin", v)}/>
+              </div>
+              <div className="field"><label>Neto hasta</label>
+                <MoneyInput value={filtros.netoMax} onChange={v=>setFiltro("netoMax", v)}/>
+              </div>
+            </div>
+
+            <div className="muted" style={{margin:"12px 0 10px"}}>
+              {cuantosFiltros===0
+                ? "Sin filtros: se ven todos los movimientos."
+                : `${filtrados.length} movimiento${filtrados.length===1?"":"s"} con estos filtros.`}
+            </div>
+
+            <div style={{display:"flex", gap:8}}>
+              <button className="exp-btn" style={{flex:1}} onClick={()=>setFiltros(SIN_FILTROS)} disabled={cuantosFiltros===0}>
+                Limpiar
+              </button>
+              <button className="exp-btn" style={{flex:1, background:INK, color:PAPER_CARD}} onClick={()=>setShowFiltros(false)}>
+                Ver resultados
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2021,6 +2132,7 @@ function GlobalStyle(){
       .col-chips { display:flex; flex-wrap:wrap; gap:6px; }
       .chip { font-size:10px; border:1px solid ${LINE}; background:${PAPER}; padding:5px 9px; border-radius:14px; color:${INK_SOFT}; cursor:pointer; }
       .chip-on { background:${INK}; color:${PAPER_CARD}; border-color:${INK}; }
+      .filtros-on { border-color:${INK}; color:${INK}; font-weight:700; background:${PAPER}; }
       .exp-btn { border:1px solid ${INK}; background:transparent; border-radius:7px; padding:9px 10px; font-size:11px; font-weight:600; color:${INK}; display:flex; align-items:center; justify-content:center; gap:5px; }
       .exp-btn.full { width:100%; }
       .exp-btn.wa { background:#3d8f5b; color:#fff; border-color:#3d8f5b; }
